@@ -119,8 +119,8 @@ Gt_103_To_104_Weeks AS "103_104",
 Gt_104_Weeks AS "104",
 Total
 FROM UDAL_Warehouse.UKHF_RTT.Full_Dataset1_1
-WHERE Effective_Snapshot_Date >= '2021-04-01'
-AND Provider_Org_Code IN ('R0A','R0B','R0D','R1F','R1H','R1K','RA2','RA4','RA7','RA9','RAE','RAJ','RAL','RAN','RAP','RAS','RAX','RBD','RBK','RBL','RBN','RBQ','RBS','RBT','RBV','RBZ','RC9','RCB','RCD','RCF','RCU','RCX','RD1','RD8','RDE','RDU','REF','REM','REN','REP','RET','RF4','RFF','RFR','RFS','RGM','RGN','RGP','RGR','RGT','RH5','RH8','RHM','RHQ','RHU','RHW','RJ1','RJ2','RJ6','RJ7','RJC','RJE','RJL','RJN','RJZ','RK5','RK9','RKB','RKE','RL1','RL4','RLQ','RLT','RM1','RM3','RMC','RMP','RN3','RN5','RN7','RNA','RNN','RNQ','RNS','RNZ','RP4','RP5','RP6','RPA','RPC','RPY','RQ3','RQM','RQW','RQX','RR7','RR8','RRF','RRJ','RRK','RRV','RTD','RTE','RTF','RTG','RTH','RTK','RTP','RTR','RTX','RVJ','RVR','RVV','RVW','RVY','RWA','RWD','RWE','RWF','RWG','RWH','RWJ','RWP','RWW','RWY','RX1','RXC','RXF','RXK','RXL','RXN','RXP','RXQ','RXR','RXW','RYJ','RYR')
+WHERE Effective_Snapshot_Date >= '2021-04-01' AND Effective_Snapshot_Date < '2023-10-01' 
+AND Provider_Org_Code IN ('R0B','R0D','R1F','R1H','R1K','RA2','RA7','RA9','RAE','RAJ','RAL','RAN','RAP','RAS','RAX','RBD','RBK','RBL','RBN','RBQ','RBS','RBT','RBV','RC9','RCB','RCD','RCF','RCU','RCX','RD1','RD8','RDE','RDU','REF','REM','REN','REP','RET','RF4','RFF','RFR','RFS','RGM','RGN','RGP','RGR','RGT','RHM','RHQ','RHU','RHW','RJ2','RJ6','RJ7','RJC','RJE','RJL','RJN','RJZ','RK5','RK9','RKB','RKE','RL1','RL4','RLQ','RLT','RM1','RMC','RMP','RN3','RN5','RN7','RNA','RNN','RNQ','RNS','RNZ','RP4','RP5','RP6','RPA','RPC','RPY','RQ3','RQM','RQW','RQX','RR7','RR8','RRF','RRJ','RRK','RRV','RTD','RTE','RTF','RTG','RTH','RTK','RTP','RTR','RTX','RVJ','RVR','RVV','RVW','RVY','RWA','RWD','RWE','RWF','RWG','RWH','RWJ','RWP','RWW','RWY','RX1','RXC','RXF','RXK','RXL','RXN','RXP','RXQ','RXR','RXW','RYJ')
 "')
 dsn(UDAL_Warehouse);
 #delimit cr;
@@ -170,7 +170,7 @@ gen Over_65_Weeks_Prop = Over_65_Weeks/Total
 gen Over_65_Weeks_Prop_Manual = Over_65_Weeks/Total_Manual
 
 * Run SDID analysis
-local excelPath "Outputs/Segmented/SDID_Results_Incomplete_Pathways".xlsx"
+local excelPath "Outputs/Segmented/SDID_Results_Incomplete_Pathways.xlsx"
 putexcel set "`excelPath'", modify
 putexcel A1 = "T_Code" B1 = "DepVar" C1 = "ATT" D1 = "SE" E1 = "Lower CI" F1 = "Upper CI" G1 = "SS"
 local row = 2
