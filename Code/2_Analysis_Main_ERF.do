@@ -2,6 +2,7 @@
 cd "C:\Users\toby_lowton\Documents\ERF_Project"
 
 * Provider RJR dropped from control set due to missing Total data (excludes WY ICB acute providers)
+* This analysis randomly assigns providers into treatment and control groups, before creating a counterfactual to model what would have happened if the control providers hadn't implemented the ERF scheme. WY is just used to determine treatment and control groups and does not refer to WY providers in this analysis. 
 ***Data Importing Code 
 clear
 #delim ;
@@ -125,47 +126,33 @@ dsn(UDAL_Warehouse);
 #delimit cr;
 compress
 
-* Create flags for different time periods and drop unnecesarry columns. Create monthly variable.
+* Create outcome variables and set up analysis
 egen Under_24_Weeks = rowtotal(var5 var6 var7 var8 var9 var10 var11 var12 var13 var14 var15 var16 var17 var18 var19 var20 var21 var22 var23 var24 var25 var26 var27 var28)
-
 egen Over_52_Weeks = rowtotal(var58 var59 var60 var61 var62 var63 var64 var65 var66 var67 var68 var69 var70 var71 var72 var73 var74 var75 var76 var77 var78 var79 var80 var81 var82 var83 var84 var85 var86 var87 var88 var89 var90 var91 var92 var93 var94 var95 var96 var97 var98 var99 var100 var101 var102 var103 var104 var105 var106 var107 var108 var109 var110)
-
 egen Over_65_Weeks = rowtotal(var71 var72 var73 var74 var75 var76 var77 var78 var79 var80 var81 var82 var83 var84 var85 var86 var87 var88 var89 var90 var91 var92 var93 var94 var95 var96 var97 var98 var99 var100 var101 var102 var103 var104 var105 var106 var107 var108 var109 var110)
-
-*Understand why total isn't provided for incomplete pathways
 egen Total_Manual = rowtotal(var5 var6 var7 var8 var9 var10 var11 var12 var13 var14 var15 var16 var17 var18 var19 var20 var21 var22 var23 var24 var25 var26 var27 var28 var29 var30 var31 var32 var33 var34 var35 var36 var37 var38 var39 var40 var41 var42 var43 var44 var45 var46 var47 var48 var49 var50 var51 var52 var53 var54 var55 var56 var58 var59 var60 var61 var62 var63 var64 var65 var66 var67 var68 var69 var70 var71 var72 var73 var74 var75 var76 var77 var78 var79 var80 var81 var82 var83 var84 var85 var86 var87 var88 var89 var90 var91 var92 var93 var94 var95 var96 var97 var98 var99 var100 var101 var102 var103 var104 var105 var106 var107 var108 var109 var110)
-
 drop var5 var6 var7 var8 var9 var10 var11 var12 var13 var14 var15 var16 var17 var18 var19 var20 var21 var22 var23 var24 var25 var26 var27 var28 var29 var30 var31 var32 var33 var34 var35 var36 var37 var38 var39 var40 var41 var42 var43 var44 var45 var46 var47 var48 var49 var50 var51 var52 var53 var54 var55 var56 var58 var59 var60 var61 var62 var63 var64 var65 var66 var67 var68 var69 var70 var71 var72 var73 var74 var75 var76 var77 var78 var79 var80 var81 var82 var83 var84 var85 var86 var87 var88 var89 var90 var91 var92 var93 var94 var95 var96 var97 var98 var99 var100 var101 var102 var103 var104 var105 var106 var107 var108 var109 var110 var57
-
 gen Yearmonth = mofd(Date)
 format Yearmonth %tm
 drop Date
 drop if Stage == "New RTT Periods - All Patients"
-
-*Set up SDID analysis and balance panel
-collapse (sum) Under_24_Weeks Over_52_Weeks Over_65_Weeks Total Total_Manual, by(Provider_Code Stage Yearmonth)
+bysort Provider_Code (Yearmonth): gen random_number = runiform() if _n == 1
+bysort Provider_Code: egen provider_random = max(random_number)
+gen WY = provider_random < .5
+collapse (sum) Under_24_Weeks Over_52_Weeks Over_65_Weeks Total Total_Manual (first) WY, by(Provider_Code Stage Yearmonth)
 set seed 12345
-egen group = group(Provider_Code)
-gen random_number = runiform() if group != .
-sort random_number
-gen half = _N/2
-gen WY = (_n <= half)
 gen ERF_Flag = cond(WY == 1, date("04/01/2023", "MDY"), date("02/02/2222", "MDY"))
-format ERF_Flag %tdnn/dd/CCYY
-drop random_number half group
 format ERF_Flag %tdnn/dd/CCYY
 format ERF_Flag %tdDMCY
 gen ERF_Flag1 = mofd(ERF_Flag) 
 format ERF_Flag1 %tm
 drop ERF_Flag
 rename ERF_Flag1 ERF_Flag
-rename Yearmonth Calendar_Month
 encode Provider_Code, gen(Group_ID)
+rename Yearmonth Calendar_Month
 gen Group_Var = cond(WY == 1, ERF_Flag, 0)
 gen Event_Time = cond(WY == 1, Calendar_Month - Group_Var, 0)
 gen Treated = cond(WY == 1 & Event_Time >= 0, 1, 0)
-
-*generate additional dependent variables (Proportional variables only possible for completed pathways)
 gen Under_24_Weeks_Prop = Under_24_Weeks/Total
 gen Under_24_Weeks_Prop_Manual = Under_24_Weeks/Total_Manual
 gen Over_52_Weeks_Prop = Over_52_Weeks/Total
@@ -173,784 +160,70 @@ gen Over_52_Weeks_Prop_Manual = Over_52_Weeks/Total_Manual
 gen Over_65_Weeks_Prop = Over_65_Weeks/Total
 gen Over_65_Weeks_Prop_Manual = Over_65_Weeks/Total_Manual
 
-* SDID Analysis
-local excelPath "Outputs/Main_ERF/SDID_Results_Non_Admitted_Pathways.xlsx"
+*Updated code: 
+* Set seed for reproducibility
+set seed 123456
+
+* Initialize a single Excel file path and headers for all segments
+local excelPath "Outputs/Main_ERF/SDID_Results_All_Pathways.xlsx"
 putexcel set "`excelPath'", modify
-putexcel A1 = "DepVar" B1 = "ATT" C1 = "SE" D1 = "Lower CI" E1 = "Upper CI" F1 = "SS"
+putexcel A1 = "Segment" B1 = "DepVar" C1 = "ATT" D1 = "SE" E1 = "Lower CI" F1 = "Upper CI" G1 = "SS"
 local row = 2
-preserve
-keep if Stage == "Completed Pathways For Non-Admitted Patients"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop
-foreach depvar in `depvars' {
-    capture sdid `depvar' Group_ID Calendar_Month Treated, vce(bootstrap) seed(123456) reps(1000) graph
+
+* Define segments and their respective dependent variables
+local segments "NonAdmitted Admitted Incomplete IncompleteDTA"
+local depvarsNonAdmitted "Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop Total_Manual"
+local depvarsAdmitted "Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop Total_Manual"
+local depvarsIncomplete "Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual Total_Manual"
+local depvarsIncompleteDTA "Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual Total_Manual"
+
+* Loop through each segment
+foreach segment in NonAdmitted Admitted Incomplete IncompleteDTA {
+    preserve
+    
+    * Apply segment-specific filter
+    if "`segment'" == "NonAdmitted" {
+        keep if Stage == "Completed Pathways For Non-Admitted Patients"
+    }
+    else if "`segment'" == "Admitted" {
+        keep if Stage == "Completed Pathways For Admitted Patients"
+    }
+    else if "`segment'" == "Incomplete" {
+        keep if Stage == "Incomplete Pathways"
+    }
+    else if "`segment'" == "IncompleteDTA" {
+        keep if Stage == "Incomplete Pathways with DTA"
+    }
+    
+    * Balance the dataset for analysis
+    gen Flag1 = 1
+    bysort Provider_Code: egen Flag2 = sum(Flag1)
+    qui sum Flag2
+    keep if Flag2 == r(max)
+    
+    * Dynamically select dependent variables based on the current segment
+    local currentDepVars = "`depvars`segment''"
+    
+    * Loop through each dependent variable for the current segment
+    foreach depvar in `currentDepVars' {
+        capture sdid `depvar' Group_ID Calendar_Month Treated, vce(bootstrap) seed(123456) reps(10) graph
         if _rc == 0 {
             local att = e(ATT)
             local se = e(se)
-            putexcel A`row' = "`depvar'" B`row' = `att' C`row' = `se' ///
-             D`row' = formula("=B`row' - (1.96 * C`row')") E`row' = formula("=B`row' + (1.96 * C`row')") F`row' = formula("=IF(AND(D`row' > 0, E`row' > 0), 1, IF(AND(D`row' < 0, E`row' < 0), 1, 0))")
+            putexcel A`row' = "`segment'" B`row' = "`depvar'" C`row' = `att' D`row' = `se' ///
+              E`row' = formula("=C`row' - (1.96 * D`row')") F`row' = formula("=C`row' + (1.96 * D`row')") G`row' = formula("=IF(AND(E`row' > 0, F`row' > 0), 1, IF(AND(E`row' < 0, F`row' < 0), 1, 0))")
             local row = `row' + 1
-            graph export "Outputs/Main_ERF/SDID_Results_Non_Admitted_Pathways_`depvar'.png", replace
+            graph export "Outputs/Main_ERF/SDID_Results_`segment'_`depvar'.png", replace
         }
         else {
-            display "sdid failed for DepVar=`depvar'. Skipping..."
+            display "SDID failed for DepVar=`depvar'. Skipping..."
         }
     }
-	
-	
+    
+    restore
+}
+
+* Save the Excel file with results from all segments
 putexcel save
-restore
-
-* Initialize Excel file path and headers
-local excelPath "Outputs/Main_ERF/SDID_Results_Admitted_Pathways.xlsx"
-putexcel set "`excelPath'", modify
-putexcel A1 = "DepVar" B1 = "ATT" C1 = "SE" D1 = "Lower CI" E1 = "Upper CI" F1 = "SS"
-local row = 2
-preserve
-keep if Stage == "Completed Pathways For Admitted Patients"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop
-foreach depvar in `depvars' {
-    capture sdid `depvar' Group_ID Calendar_Month Treated, vce(bootstrap) seed(123456) reps(10) graph
-        if _rc == 0 {
-            local att = e(ATT)
-            local se = e(se)
-            putexcel A`row' = "`depvar'" B`row' = `att' C`row' = `se' ///
-             D`row' = formula("=B`row' - (1.96 * C`row')") E`row' = formula("=B`row' + (1.96 * C`row')") F`row' = formula("=IF(AND(D`row' > 0, E`row' > 0), 1, IF(AND(D`row' < 0, E`row' < 0), 1, 0))")
-            local row = `row' + 1
-            graph export "Outputs/Main_ERF/SDID_Results_Admitted_Pathways_`depvar'.png", replace
-        }
-        else {
-            display "sdid failed for DepVar=`depvar'. Skipping..."
-        }
-    }
-putexcel save
-restore
-
-* Initialize Excel file path and headers
-local excelPath "Outputs/Main_ERF/SDID_Results_Incomplete_Pathways.xlsx"
-putexcel set "`excelPath'", modify
-putexcel A1 = "DepVar" B1 = "ATT" C1 = "SE" D1 = "Lower CI" E1 = "Upper CI" F1 = "SS"
-local row = 2
-preserve
-keep if Stage == "Incomplete Pathways"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual
-foreach depvar in `depvars' {
-    capture sdid `depvar' Group_ID Calendar_Month Treated, vce(bootstrap) seed(123456) reps(10) graph
-        if _rc == 0 {
-            local att = e(ATT)
-            local se = e(se)
-            putexcel A`row' = "`depvar'" B`row' = `att' C`row' = `se' ///
-             D`row' = formula("=B`row' - (1.96 * C`row')") E`row' = formula("=B`row' + (1.96 * C`row')") F`row' = formula("=IF(AND(D`row' > 0, E`row' > 0), 1, IF(AND(D`row' < 0, E`row' < 0), 1, 0))")
-            local row = `row' + 1
-            graph export "Outputs/Main_ERF/SDID_Results_Incomplete_Pathways_`depvar'.png", replace
-        }
-        else {
-            display "sdid failed for DepVar=`depvar'. Skipping..."
-        }
-    }
-putexcel save
-restore
-
-* Initialize Excel file path and headers
-local excelPath "Outputs/Main_ERF/SDID_Results_Incomplete_Pathways_DTA.xlsx"
-putexcel set "`excelPath'", modify
-putexcel A1 = "DepVar" B1 = "ATT" C1 = "SE" D1 = "Lower CI" E1 = "Upper CI" F1 = "SS"
-local row = 2
-preserve
-keep if Stage == "Incomplete Pathways with DTA"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual
-foreach depvar in `depvars' {
-    capture sdid `depvar' Group_ID Calendar_Month Treated, vce(bootstrap) seed(123456) reps(10) graph
-        if _rc == 0 {
-            local att = e(ATT)
-            local se = e(se)
-            putexcel A`row' = "`depvar'" B`row' = `att' C`row' = `se' ///
-             D`row' = formula("=B`row' - (1.96 * C`row')") E`row' = formula("=B`row' + (1.96 * C`row')") F`row' = formula("=IF(AND(D`row' > 0, E`row' > 0), 1, IF(AND(D`row' < 0, E`row' < 0), 1, 0))")
-            local row = `row' + 1
-            graph export "Outputs/Main_ERF/SDID_Results_Incomplete_Pathways_DTA_`depvar'.png", replace
-        }
-        else {
-            display "sdid failed for DepVar=`depvar'. Skipping..."
-        }
-    }
-putexcel save
-restore
 
 
-*CSA Analysis
-preserve
-keep if Stage == "Completed Pathways For Non-Admitted Patients"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop
-foreach depvar in `depvars' {
-    * Start logging results for the current dependent variable
-    log using "Outputs/Main/CSA_Non-Admitted_Pathways_`depvar'.log", replace
-	csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID)
-	estat pretrend, window(-24 -1)
-	set seed 123456
-    csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID) wboot saverif(altnh) ad csdid_stats replace
-    csdid_estat event
-    csdid_plot, style(rcap)
-    tempfile analysisResults
-    save `analysisResults', replace
-    use altnh, clear
-	set seed 123456
-    csdid_stats event, wboot estore(event)
-    graph export "Outputs/Main/CSA_Non-Admitted_Pathways_`depvar'.png", replace
-    use `analysisResults', clear
-    log close
-}
-restore
-erase altnh.dta
-
-preserve
-keep if Stage == "Completed Pathways For Admitted Patients"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop
-foreach depvar in `depvars' {
-    * Start logging results for the current dependent variable
-    log using "Outputs/Main/CSA_Admitted_Pathways_`depvar'.log", replace
-	csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID)
-	estat pretrend, window(-24 -1)
-	set seed 123456
-    csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID) wboot saverif(altnh) ad csdid_stats replace
-    csdid_estat event
-    csdid_plot, style(rcap)
-    tempfile analysisResults
-    save `analysisResults', replace
-    use altnh, clear
-	set seed 123456
-    csdid_stats event, wboot estore(event)
-    graph export "Outputs/Main/CSA_Admitted_Pathways_`depvar'.png", replace
-    use `analysisResults', clear
-    log close
-}
-restore
-erase altnh.dta
-
-preserve
-keep if Stage == "Incomplete Pathways"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual
-foreach depvar in `depvars' {
-    * Start logging results for the current dependent variable
-    log using "Outputs/Main/CSA_Incomplete_Pathways_`depvar'.log", replace
-	csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID)
-	estat pretrend, window(-24 -1)
-	set seed 123456
-    csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID) wboot saverif(altnh) ad csdid_stats replace
-    csdid_estat event
-    csdid_plot, style(rcap)
-    tempfile analysisResults
-    save `analysisResults', replace
-    use altnh, clear
-	set seed 123456
-    csdid_stats event, wboot estore(event)
-    graph export "Outputs/Main/CSA_Incomplete_Pathways_`depvar'.png", replace
-    use `analysisResults', clear
-    log close
-}
-restore
-erase altnh.dta
-
-preserve
-keep if Stage == "Incomplete Pathways with DTA"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual
-foreach depvar in `depvars' {
-    * Start logging results for the current dependent variable
-    log using "Outputs/Main/CSA_Incomplete_Pathways_DTA_`depvar'.log", replace
-	csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID)
-	estat pretrend, window(-24 -1)
-	set seed 123456
-    csdid `depvar', time(Calendar_Month) gvar(Group_Var) ivar(Group_ID) wboot saverif(altnh) ad csdid_stats replace
-    csdid_estat event
-    csdid_plot, style(rcap)
-    tempfile analysisResults
-    save `analysisResults', replace
-    use altnh, clear
-	set seed 123456
-    csdid_stats event, wboot estore(event)
-    graph export "Outputs/Main/CSA_Incomplete_Pathways_DTA_`depvar'.png", replace
-    use `analysisResults', clear
-    log close
-}
-restore
-erase altnh.dta
-
-
-*Naive DiD Analysis
-preserve
-keep if Stage == "Completed Pathways For Non-Admitted Patients"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop
-foreach depvar in `depvars' {
-putexcel set Outputs\Main\Naive_DiD_Non-Admitted_Pathways_`depvar'.xlsx, sheet(model) modify
-putexcel C1 = "Mean Treatment - pre"
-putexcel D1 = "SD Treatment - pre"
-putexcel E1 = "Mean Treatment - post"
-putexcel F1 = "SD Treatment - post"
-putexcel G1 = "Mean Control - pre"
-putexcel H1 = "SD Control - pre"
-putexcel I1 = "Mean Control - post"
-putexcel J1 = "SD Control - post"
-putexcel B2 = "RAE"
-putexcel B3 = "RCF"
-putexcel B4 = "RR8"
-putexcel B5 = "RWY"
-putexcel B6 = "RXF"
-
-* Treatment providers pre and post implementation
-summarize `depvar' if Provider_Code == "RAE" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D2 = `output'
-summarize `depvar' if Provider_Code == "RAE" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J2 = `output'
-putexcel K2 = formula("=(E2-C2)-(I2-G2)")
-
-summarize `depvar' if Provider_Code == "RCF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D3 = `output'
-summarize `depvar' if Provider_Code == "RCF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J3 = `output'
-putexcel K3 = formula("=(E3-C3)-(I3-G3)")
-
-summarize `depvar' if Provider_Code == "RR8" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D4 = `output'
-summarize `depvar' if Provider_Code == "RR8" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J4 = `output'
-putexcel K4 = formula("=(E4-C4)-(I4-G4)")
-
-summarize `depvar' if Provider_Code == "RWY" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D5 = `output'
-summarize `depvar' if Provider_Code == "RWY" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J5 = `output'
-putexcel K5 = formula("=(E5-C5)-(I5-G5)")
-
-summarize `depvar' if Provider_Code == "RXF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D6 = `output'
-summarize `depvar' if Provider_Code == "RXF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J6 = `output'
-putexcel K6 = formula("=(E6-C6)-(I6-G6)")
-}
-restore
-
-
-
-preserve
-keep if Stage == "Completed Pathways For Admitted Patients"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop
-foreach depvar in `depvars' {
-putexcel set Outputs\Main\Naive_DiD_Admitted_Pathways_`depvar'.xlsx, sheet(model) modify
-putexcel C1 = "Mean Treatment - pre"
-putexcel D1 = "SD Treatment - pre"
-putexcel E1 = "Mean Treatment - post"
-putexcel F1 = "SD Treatment - post"
-putexcel G1 = "Mean Control - pre"
-putexcel H1 = "SD Control - pre"
-putexcel I1 = "Mean Control - post"
-putexcel J1 = "SD Control - post"
-putexcel B2 = "RAE"
-putexcel B3 = "RCF"
-putexcel B4 = "RR8"
-putexcel B5 = "RWY"
-putexcel B6 = "RXF"
-
-* Treatment providers pre and post implementation
-summarize `depvar' if Provider_Code == "RAE" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D2 = `output'
-summarize `depvar' if Provider_Code == "RAE" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J2 = `output'
-putexcel K2 = formula("=(E2-C2)-(I2-G2)")
-
-summarize `depvar' if Provider_Code == "RCF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D3 = `output'
-summarize `depvar' if Provider_Code == "RCF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J3 = `output'
-putexcel K3 = formula("=(E3-C3)-(I3-G3)")
-
-summarize `depvar' if Provider_Code == "RR8" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D4 = `output'
-summarize `depvar' if Provider_Code == "RR8" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J4 = `output'
-putexcel K4 = formula("=(E4-C4)-(I4-G4)")
-
-summarize `depvar' if Provider_Code == "RWY" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D5 = `output'
-summarize `depvar' if Provider_Code == "RWY" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J5 = `output'
-putexcel K5 = formula("=(E5-C5)-(I5-G5)")
-
-summarize `depvar' if Provider_Code == "RXF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D6 = `output'
-summarize `depvar' if Provider_Code == "RXF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J6 = `output'
-putexcel K6 = formula("=(E6-C6)-(I6-G6)")
-}
-restore
-
-
-* Treatment providers pre and post implementation
-preserve
-keep if Stage == "Incomplete Pathways"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual
-foreach depvar in `depvars' {
-putexcel set Outputs\Main\Naive_DiD_Incomplete_Pathways_`depvar'.xlsx, sheet(model) modify
-putexcel C1 = "Mean Treatment - pre"
-putexcel D1 = "SD Treatment - pre"
-putexcel E1 = "Mean Treatment - post"
-putexcel F1 = "SD Treatment - post"
-putexcel G1 = "Mean Control - pre"
-putexcel H1 = "SD Control - pre"
-putexcel I1 = "Mean Control - post"
-putexcel J1 = "SD Control - post"
-putexcel B2 = "RAE"
-putexcel B3 = "RCF"
-putexcel B4 = "RR8"
-putexcel B5 = "RWY"
-putexcel B6 = "RXF"
-
-* Treatment providers pre and post implementation
-summarize `depvar' if Provider_Code == "RAE" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D2 = `output'
-summarize `depvar' if Provider_Code == "RAE" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J2 = `output'
-putexcel K2 = formula("=(E2-C2)-(I2-G2)")
-
-summarize `depvar' if Provider_Code == "RCF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D3 = `output'
-summarize `depvar' if Provider_Code == "RCF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J3 = `output'
-putexcel K3 = formula("=(E3-C3)-(I3-G3)")
-
-summarize `depvar' if Provider_Code == "RR8" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D4 = `output'
-summarize `depvar' if Provider_Code == "RR8" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J4 = `output'
-putexcel K4 = formula("=(E4-C4)-(I4-G4)")
-
-summarize `depvar' if Provider_Code == "RWY" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D5 = `output'
-summarize `depvar' if Provider_Code == "RWY" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J5 = `output'
-putexcel K5 = formula("=(E5-C5)-(I5-G5)")
-
-summarize `depvar' if Provider_Code == "RXF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D6 = `output'
-summarize `depvar' if Provider_Code == "RXF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J6 = `output'
-putexcel K6 = formula("=(E6-C6)-(I6-G6)")
-}
-restore
-
-
-* Treatment providers pre and post implementation
-preserve
-keep if Stage == "Incomplete Pathways with DTA"
-gen Flag1 = 1
-bysort Provider_Code: egen Flag2 = sum(Flag1)
-qui sum Flag2
-keep if Flag2 == r(max)
-local depvars Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual
-foreach depvar in `depvars' {
-putexcel set Outputs\Main\Naive_DiD_Incomplete_Pathways_DTA_`depvar'.xlsx, sheet(model) modify
-putexcel C1 = "Mean Treatment - pre"
-putexcel D1 = "SD Treatment - pre"
-putexcel E1 = "Mean Treatment - post"
-putexcel F1 = "SD Treatment - post"
-putexcel G1 = "Mean Control - pre"
-putexcel H1 = "SD Control - pre"
-putexcel I1 = "Mean Control - post"
-putexcel J1 = "SD Control - post"
-putexcel B2 = "RAE"
-putexcel B3 = "RCF"
-putexcel B4 = "RR8"
-putexcel B5 = "RWY"
-putexcel B6 = "RXF"
-summarize `depvar' if Provider_Code == "RAE" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D2 = `output'
-summarize `depvar' if Provider_Code == "RAE" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H2 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I2 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J2 = `output'
-putexcel K2 = formula("=(E2-C2)-(I2-G2)")
-
-summarize `depvar' if Provider_Code == "RCF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D3 = `output'
-summarize `depvar' if Provider_Code == "RCF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H3 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I3 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J3 = `output'
-putexcel K3 = formula("=(E3-C3)-(I3-G3)")
-
-summarize `depvar' if Provider_Code == "RR8" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D4 = `output'
-summarize `depvar' if Provider_Code == "RR8" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H4 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I4 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J4 = `output'
-putexcel K4 = formula("=(E4-C4)-(I4-G4)")
-
-summarize `depvar' if Provider_Code == "RWY" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D5 = `output'
-summarize `depvar' if Provider_Code == "RWY" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H5 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I5 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J5 = `output'
-putexcel K5 = formula("=(E5-C5)-(I5-G5)")
-
-summarize `depvar' if Provider_Code == "RXF" & Event_Time <0
-local output = round(`r(mean)', 0.001)
-putexcel C6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel D6 = `output'
-summarize `depvar' if Provider_Code == "RXF" & Event_Time >=0
-local output = round(`r(mean)', 0.001)
-putexcel E6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel F6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  < 759
-local output = round(`r(mean)', 0.001)
-putexcel G6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel H6 = `output'
-summarize `depvar' if WY == 0 & Calendar_Month  >= 759
-local output = round(`r(mean)', 0.001)
-putexcel I6 = `output'
-local output = round(`r(sd)', 0.001)
-putexcel J6 = `output'
-putexcel K6 = formula("=(E6-C6)-(I6-G6)")
-}
-restore
