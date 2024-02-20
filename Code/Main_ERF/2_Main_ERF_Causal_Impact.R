@@ -22,6 +22,8 @@ library(readr)
 library(readxl)
 library(pheatmap)
 
+#Staffing
+
 #Import Data (Analysis includes only small medium large acute trusts for comparison, and excludes WY ICB trusts - this needs checking)
 con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
 data <- dbGetQuery(con, "
