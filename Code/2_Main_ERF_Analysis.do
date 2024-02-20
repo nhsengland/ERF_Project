@@ -160,7 +160,9 @@ gen Over_52_Weeks_Prop_Manual = Over_52_Weeks/Total_Manual
 gen Over_65_Weeks_Prop = Over_65_Weeks/Total
 gen Over_65_Weeks_Prop_Manual = Over_65_Weeks/Total_Manual
 
-*Updated code: 
+* Set seed for reproducibility
+set seed 123456
+
 * Set seed for reproducibility
 set seed 123456
 
@@ -170,12 +172,11 @@ putexcel set "`excelPath'", modify
 putexcel A1 = "Segment" B1 = "DepVar" C1 = "ATT" D1 = "SE" E1 = "Lower CI" F1 = "Upper CI" G1 = "SS"
 local row = 2
 
-* Define segments and their respective dependent variables
+* Define a single set of dependent variables for all segments
+local depvars "Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual Total_Manual"
+
+* Define segments
 local segments "NonAdmitted Admitted Incomplete IncompleteDTA"
-local depvarsNonAdmitted "Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop Total_Manual"
-local depvarsAdmitted "Under_24_Weeks_Prop Over_52_Weeks_Prop Over_65_Weeks_Prop Total_Manual"
-local depvarsIncomplete "Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual Total_Manual"
-local depvarsIncompleteDTA "Under_24_Weeks_Prop_Manual Over_52_Weeks_Prop_Manual Over_65_Weeks_Prop_Manual Total_Manual"
 
 * Loop through each segment
 foreach segment in NonAdmitted Admitted Incomplete IncompleteDTA {
@@ -201,19 +202,16 @@ foreach segment in NonAdmitted Admitted Incomplete IncompleteDTA {
     qui sum Flag2
     keep if Flag2 == r(max)
     
-    * Dynamically select dependent variables based on the current segment
-    local currentDepVars = "`depvars`segment''"
-    
     * Loop through each dependent variable for the current segment
-    foreach depvar in `currentDepVars' {
-        capture sdid `depvar' Group_ID Calendar_Month Treated, vce(bootstrap) seed(123456) reps(10) graph
+    foreach depvar in `depvars' {
+        capture sdid `depvar' Group_ID Calendar_Month Treated, vce(bootstrap) seed(123456) reps(1000) graph
         if _rc == 0 {
             local att = e(ATT)
             local se = e(se)
             putexcel A`row' = "`segment'" B`row' = "`depvar'" C`row' = `att' D`row' = `se' ///
               E`row' = formula("=C`row' - (1.96 * D`row')") F`row' = formula("=C`row' + (1.96 * D`row')") G`row' = formula("=IF(AND(E`row' > 0, F`row' > 0), 1, IF(AND(E`row' < 0, F`row' < 0), 1, 0))")
             local row = `row' + 1
-            graph export "Outputs/Main_ERF/SDID_Results_`segment'_`depvar'.png", replace
+            graph export "Outputs/Main_ERF/Graphs/SDID_Results_`segment'_`depvar'.png", replace
         }
         else {
             display "SDID failed for DepVar=`depvar'. Skipping..."
@@ -225,5 +223,3 @@ foreach segment in NonAdmitted Admitted Incomplete IncompleteDTA {
 
 * Save the Excel file with results from all segments
 putexcel save
-
-
