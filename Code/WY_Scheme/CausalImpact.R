@@ -101,6 +101,15 @@ specialties <- c("Medical", "Surgical")
 # Initialize an empty list for results
 results_list <- list()
 
+# Ensure the output directory for plots exists
+output_dir <- "outputs/WY/Plots"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Initialize an empty list for results
+results_list <- list()
+
 # Loop through each setting, specialty, and now corrected group
 for (setting in settings) {
   for (specialty in specialties) {
@@ -125,6 +134,21 @@ for (setting in settings) {
       # Example CausalImpact analysis (replace with actual analysis as needed)
       impact <- CausalImpact(data_zoo, pre.period, post.period, model.args = list(niter = 1000, nseasons = 12))
       
+      # Check if the impact analysis was successful
+      if (!is.null(impact)) {
+        plot_title <- sprintf("%s_%s_%s.png", setting, specialty, gsub(" ", "_", group))
+        plot_path <- file.path(output_dir, plot_title)
+        
+        # Open PNG device
+        png(filename = plot_path, width = 800, height = 600)
+        
+        # Plot the impact analysis results
+        # IMPORTANT: Use print() to explicitly render the plot
+        print(plot(impact))
+        
+        # Turn off the device
+        dev.off()
+      }
       # Extract and compile relevant metrics from the analysis
       if (!is.null(impact) && !is.null(impact$summary)) {
         rel_effect_avg <- impact$summary$RelEffect[1] * 100
@@ -156,7 +180,6 @@ for (setting in settings) {
     }
   }
 }
-
 # Combine all results into a single data frame and save
 final_results_df <- bind_rows(results_list)
 write.xlsx(final_results_df, "Outputs/WY/Results.xlsx", rowNames = FALSE)
