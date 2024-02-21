@@ -7,7 +7,7 @@ library(lubridate)
 library(DBI)
 library(readr)
 library(openxlsx)
-
+library(htmlTable)
 
 # Connect to the database
 con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
@@ -95,13 +95,12 @@ groups_filters <- unique(data$Group)
 settings <- c("AP", "NAP")  # Settings to loop through
 specialties <- c("Medical", "Surgical")
 
-# Define directories for plots and results
-plot_dir <- "outputs/WY/CausalArima/Plots"
-result_dir <- "outputs/WY/CausalArima/Results"
-if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
-if (!dir.exists(result_dir)) dir.create(result_dir, recursive = TRUE)
 
-results_list <- list()
+# Define directories for plots and HTML results
+plot_dir <- "outputs/WY/CausalArima/Plots"
+html_result_dir <- "outputs/WY/CausalArima/HTML_Results"
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+if (!dir.exists(html_result_dir)) dir.create(html_result_dir, recursive = TRUE)
 
 # Loop through each setting, specialty, and group
 for (setting in settings) {
@@ -111,42 +110,32 @@ for (setting in settings) {
       
       if (nrow(subset_data) == 0) next
       
-      # Assuming 'Date' conversion and 'Bed_Occ' handling are correctly performed before this step
       start_year <- format(min(subset_data$Date), "%Y")
       start_month <- format(min(subset_data$Date), "%m")
       y <- ts(subset_data$PatientCount, start = c(as.numeric(start_year), as.numeric(start_month)), frequency = 12)
       xreg <- as.matrix(subset_data$BedOcc)
-      int.date <- as.Date("2023-04-01") # Example intervention date
+      int.date <- as.Date("2023-03-01")
       
-      # Fit CausalArima model
       ce <- CausalArima(y = y, dates = subset_data$Date, int.date = int.date, xreg = xreg, nboot = 1000)
       
-      # Plot and save the forecast plot
+      # Save plots as before
       forecast_plot <- plot(ce, type = "forecast")
       forecast_plot_path <- file.path(plot_dir, paste0(setting, "_", specialty, "_", group, "_forecast.png"))
       ggsave(forecast_plot_path, plot = forecast_plot, width = 8, height = 6)
       
-      # Plot and save the impact plot
-      impact_plot <- plot(ce, type = "impact")
-      impact_plot_path <- file.path(plot_dir, paste0(setting, "_", specialty, "_", group, "_impact.png"))
-      ggsave(impact_plot_path, plot = impact_plot$plot, width = 8, height = 6)
+      # Generate and save residual plots
+      residual_plots <- plot(ce, type = "residuals")
+      residual_plot_path <- file.path(plot_dir, paste0(setting, "_", specialty, "_", group, "_residuals.png"))
+      ggsave(residual_plot_path, grid.arrange(residual_plots$ACF, residual_plots$PACF, residual_plots$QQ_plot, ncol = 3), width = 12, height = 4)
       
-      # Extract summary statistics
-      summary_stats <- summary(ce)
-      # Assuming 'summary_stats' extraction logic here
-      
-      # Append summary stats to the results list
-      results_list[[paste(setting, specialty, group, sep = "_")]] <- summary_stats
+      # Save the HTML output of summary_model$impact_boot
+      summary_model <- summary(ce)
+      html_file_path <- file.path(html_result_dir, paste0(setting, "_", specialty, "_", group, "_impact_boot.html"))
+      html_content <- htmlTable(summary_model)
+      writeLines(as.character(html_content), html_file_path)
     }
   }
 }
-
-# Combine all results into a data frame
-final_results_df <- bind_rows(results_list, .id = "AnalysisID")
-
-# Save results to Excel
-write.xlsx(final_results_df, file.path(result_dir, "CausalArima_Results.xlsx"))
-
 
 
 ##Working Example
@@ -186,7 +175,11 @@ ce <- CausalArima(y = y,
                   int.date = int.date,
                   xreg = xreg, 
                   nboot = 1000)
-
+summary(ce)
+horizon <- as.Date(c("2021-04-01", "2023-09-01"))
+print(ce, type = "boot", horizon = horizon)
+summary_model<-impact(ce, format="html")
+print(summary_model)
 forecasted<-plot(ce, type="forecast")
 forecasted+theme_wsj()
 impact_p<-plot(ce, type="impact")

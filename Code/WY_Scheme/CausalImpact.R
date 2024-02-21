@@ -1,4 +1,6 @@
 # Set Working Directory and run packages
+# note other visualisation options https://rpubs.com/tgwilson/causalimpactggplot
+
 setwd("C:/Users/toby_lowton/Documents/ERF_Project")
 library(tidyr)
 library(dplyr)
@@ -8,7 +10,7 @@ library(lubridate)
 library(DBI)
 library(readr)
 library(openxlsx)
-
+library(pacman)
 
 # Connect to the database
 con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
@@ -130,7 +132,7 @@ for (setting in settings) {
       data_zoo <- zoo(cbind(group_aggregated$Total_PatientCount, group_aggregated$AvgBedOcc), order.by = group_aggregated$Date)
       
       # Define pre and post period for the analysis
-      pre.period <- as.Date(c("2021-09-01", "2023-03-31"))
+      pre.period <- as.Date(c("2021-09-01", "2023-03-01"))
       post.period <- as.Date(c("2023-04-01", "2023-09-01"))
       
       # Example CausalImpact analysis (replace with actual analysis as needed)
