@@ -121,6 +121,10 @@ for (setting in settings) {
       
       # Fit CausalArima model
       ce <- CausalArima(y = y, dates = subset_data$Date, int.date = int.date, xreg = xreg, nboot = 1000)
+      summary_ce <- summary(ce)
+      summary_model <- impact(ce, format = "html")
+      average_impact_summary <- summary_model$average
+      average_impact_path <- file.path(result_dir, paste0(setting, "_", specialty, "_", group, "_AverageImpact.xlsx"))
       
       # Plot and save the forecast plot
       forecast_plot <- plot(ce, type = "forecast")
@@ -132,6 +136,14 @@ for (setting in settings) {
       impact_plot_path <- file.path(plot_dir, paste0(setting, "_", specialty, "_", group, "_impact.png"))
       ggsave(impact_plot_path, plot = impact_plot$plot, width = 8, height = 6)
       
+      # Generating and saving residual plots
+      residual_plots <- plot(ce, type = "residuals")
+      
+      # File path for saving the grid arrange plot of residuals
+      residual_plot_path <- file.path(plot_dir, paste0(setting, "_", specialty, "_", group, "_residuals.png"))
+      
+      # Saving the grid arrange plot
+      ggsave(residual_plot_path, grid.arrange(residual_plots$ACF, residual_plots$PACF, residual_plots$QQ_plot, ncol = 3), width = 12, height = 4)
       # Extract summary statistics
       summary_stats <- summary(ce)
       # Assuming 'summary_stats' extraction logic here
@@ -145,12 +157,8 @@ for (setting in settings) {
 # Combine all results into a data frame
 final_results_df <- bind_rows(results_list, .id = "AnalysisID")
 
-# Save results to Excel
-write.xlsx(final_results_df, file.path(result_dir, "CausalArima_Results.xlsx"))
-
-
-
-
+# Save the average impact summary to a separate Excel file
+write.xlsx(average_impact_summary, "CausalArima_Results.xlsx")
 
 
 
