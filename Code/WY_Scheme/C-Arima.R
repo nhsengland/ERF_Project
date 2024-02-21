@@ -2,16 +2,13 @@
 setwd("C:/Users/toby_lowton/Documents/ERF_Project")
 library(tidyr)
 library(dplyr)
+library(CausalImpact)
 library(zoo)
 library(lubridate)
 library(DBI)
 library(readr)
 library(openxlsx)
-library(CausalArima)
-library(forecast)
-library(ggplot2)
-library(gridExtra)
-library(ggthemes)
+
 
 # Connect to the database
 con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
@@ -62,6 +59,112 @@ data <- data %>%
   mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
          Date = floor_date(as.Date(Date), "month"))
 
+# Assuming 'data' is loaded with all required weeks and patient counts.
+data$WeekNum <- as.numeric(gsub(">[^0-9]*([0-9]+)-[0-9]+", "\\1", data$Weeks))
+data_grouped <- data %>%
+  group_by(Setting, Specialty, Date)
+
+# Summarize data to calculate patient counts for each time frame
+data_summarized <- data_grouped %>%
+  summarise(
+    Total = sum(PatientCount, na.rm = TRUE),
+    Over_18_weeks = sum(ifelse(WeekNum >= 18, PatientCount, 0), na.rm = TRUE),
+    Over_40_weeks = sum(ifelse(WeekNum >= 40, PatientCount, 0), na.rm = TRUE),
+    Over_51_weeks = sum(ifelse(WeekNum >= 51, PatientCount, 0), na.rm = TRUE),
+    Over_64_weeks = sum(ifelse(WeekNum >= 64, PatientCount, 0), na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    Seen_within_18_weeks = Total - Over_18_weeks,
+    Seen_19_to_40_weeks = Over_18_weeks - Over_40_weeks,
+    Seen_41_to_51_weeks = Over_40_weeks - Over_51_weeks,
+    Seen_52_to_64_weeks = Over_51_weeks - Over_64_weeks,
+    Seen_after_64_weeks = Over_64_weeks
+  )
+
+data <- pivot_longer(data_summarized, 
+                     cols = starts_with("Seen"), 
+                     names_to = "Group", 
+                     values_to = "PatientCount")
+
+# Import bed occupancy data, set date to first of month and then join
+Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols())
+Bed_Occ$Date <- dmy(paste("01-", Bed_Occ$Date, sep=""))
+data <- left_join(data, Bed_Occ, by = c("Date"))
+
+groups_filters <- unique(data$Group)
+settings <- c("AP", "NAP")  # Settings to loop through
+specialties <- c("Medical", "Surgical")
+
+# Define directories for plots and results
+plot_dir <- "outputs/WY/CausalArima/Plots"
+result_dir <- "outputs/WY/CausalArima/Results"
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+if (!dir.exists(result_dir)) dir.create(result_dir, recursive = TRUE)
+
+results_list <- list()
+
+# Loop through each setting, specialty, and group
+for (setting in settings) {
+  for (specialty in specialties) {
+    for (group in groups_filters) {
+      subset_data <- filter(data, Setting == setting, Specialty == specialty, Group == group)
+      
+      if (nrow(subset_data) == 0) next
+      
+      # Assuming 'Date' conversion and 'Bed_Occ' handling are correctly performed before this step
+      start_year <- format(min(subset_data$Date), "%Y")
+      start_month <- format(min(subset_data$Date), "%m")
+      y <- ts(subset_data$PatientCount, start = c(as.numeric(start_year), as.numeric(start_month)), frequency = 12)
+      xreg <- as.matrix(subset_data$BedOcc)
+      int.date <- as.Date("2023-04-01") # Example intervention date
+      
+      # Fit CausalArima model
+      ce <- CausalArima(y = y, dates = subset_data$Date, int.date = int.date, xreg = xreg, nboot = 1000)
+      
+      # Plot and save the forecast plot
+      forecast_plot <- plot(ce, type = "forecast")
+      forecast_plot_path <- file.path(plot_dir, paste0(setting, "_", specialty, "_", group, "_forecast.png"))
+      ggsave(forecast_plot_path, plot = forecast_plot, width = 8, height = 6)
+      
+      # Plot and save the impact plot
+      impact_plot <- plot(ce, type = "impact")
+      impact_plot_path <- file.path(plot_dir, paste0(setting, "_", specialty, "_", group, "_impact.png"))
+      ggsave(impact_plot_path, plot = impact_plot$plot, width = 8, height = 6)
+      
+      # Extract summary statistics
+      summary_stats <- summary(ce)
+      # Assuming 'summary_stats' extraction logic here
+      
+      # Append summary stats to the results list
+      results_list[[paste(setting, specialty, group, sep = "_")]] <- summary_stats
+    }
+  }
+}
+
+# Combine all results into a data frame
+final_results_df <- bind_rows(results_list, .id = "AnalysisID")
+
+# Save results to Excel
+write.xlsx(final_results_df, file.path(result_dir, "CausalArima_Results.xlsx"))
+
+
+
+
+
+
+
+
+
+
+
+##Working Example
+
+# Categorize data into 'Surgical' or 'Medical' based on Treatment Function Code
+data <- data %>%
+  mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
+         Date = floor_date(as.Date(Date), "month"))
+
 # Import bed occupancy data, set date to first of month and then join
 Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols())
 Bed_Occ$Date <- dmy(paste("01-", Bed_Occ$Date, sep=""))
@@ -94,43 +197,7 @@ ce <- CausalArima(y = y,
                   nboot = 1000)
 
 forecasted<-plot(ce, type="forecast")
-forecasted
-grid.arrange(impact_p$plot, impact_p$cumulative_plot)
-summary(ce)
-summary_model<-impact(ce, format="html")
-summary_model$arima
-summary_model$impact_norm
-summary_model$impact_boot
-residuals<-plot(ce, type="residuals")
-grid.arrange(residuals$ACF, residuals$PACF, residuals$QQ_plot)
-forecasted_2<-plot(ce, type="forecast", fill_colour="orange",
-                   colours=c("red", "blue"))
-forecasted_2
-forecasted_2+theme_wsj()
 forecasted+theme_wsj()
-
-
-
-
-
-
-
-
-
-
-# C-Arima Analysis
-start_date <- as.Date("2021-04-30") 
-end_date <- as.Date("2023-09-30") 
-dates <- seq.Date(from = start_date, to = end_date, by = "month")
-dates <- ceiling_date(dates, "month") - days(1)
-ip_ts <- ts(provider_proportions$Total_IP, start=c(2021, 4), frequency=12)
-int_date <- as.Date("2023-04-30")
-xreg <- as.matrix(provider_proportions[, !(names(provider_proportions) %in% c("Date", "Total_IP"))])
-ce <- CausalArima(y = ip_ts, dates = dates, int.date = int_date, xreg = xreg, nboot = 1000)
-
-ce <- CausalArima(y = ip_ts, dates = dates, int.date = int_date, xreg ="ROB", nboot = 1000)
-forecasted<-plot(ce, type="forecast")
-forecasted
 impact_p<-plot(ce, type="impact")
 grid.arrange(impact_p$plot, impact_p$cumulative_plot)
 summary(ce)
@@ -140,17 +207,3 @@ summary_model$impact_norm
 summary_model$impact_boot
 residuals<-plot(ce, type="residuals")
 grid.arrange(residuals$ACF, residuals$PACF, residuals$QQ_plot)
-forecasted_2<-plot(ce, type="forecast", fill_colour="orange",
-                   colours=c("red", "blue"))
-forecasted_2
-forecasted_2+theme_wsj()
-
-
-#Testing of the filtered dataset
-result <- adf.test(filtered_data$IP)
-print(result)
-
-auto_arima_model <- auto.arima(filtered_data$IP)
-print(summary(auto_arima_model))
-
-

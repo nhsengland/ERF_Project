@@ -59,15 +59,8 @@ data <- data %>%
   mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
          Date = floor_date(as.Date(Date), "month"))
 
-# Import bed occupancy data, set date to first of month and then join
-Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols())
-Bed_Occ$Date <- dmy(paste("01-", Bed_Occ$Date, sep=""))
-data <- left_join(data, Bed_Occ, by = c("Date"))
-
 # Assuming 'data' is loaded with all required weeks and patient counts.
 data$WeekNum <- as.numeric(gsub(">[^0-9]*([0-9]+)-[0-9]+", "\\1", data$Weeks))
-
-# Group data by Setting, Specialty, and Date
 data_grouped <- data %>%
   group_by(Setting, Specialty, Date)
 
@@ -90,9 +83,14 @@ data_summarized <- data_grouped %>%
   )
 
 data <- pivot_longer(data_summarized, 
-                              cols = starts_with("Seen"), 
-                              names_to = "Group", 
-                              values_to = "PatientCount")
+                     cols = starts_with("Seen"), 
+                     names_to = "Group", 
+                     values_to = "PatientCount")
+
+# Import bed occupancy data, set date to first of month and then join
+Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols())
+Bed_Occ$Date <- dmy(paste("01-", Bed_Occ$Date, sep=""))
+data <- left_join(data, Bed_Occ, by = c("Date"))
 
 groups_filters <- unique(data$Group)
 settings <- c("AP", "NAP")  # Settings to loop through
@@ -119,13 +117,17 @@ for (setting in settings) {
       
       if (nrow(group_filtered) == 0) next # Skip if no data
       
-      # Prepare the data for analysis, e.g., aggregation by Date
       group_aggregated <- group_filtered %>%
         group_by(Date) %>%
-        summarise(Total_PatientCount = sum(PatientCount), .groups = 'drop')
+        summarise(
+          Total_PatientCount = sum(PatientCount, na.rm = TRUE),
+          AvgBedOcc = mean(BedOcc, na.rm = TRUE),
+          .groups = 'drop'
+        )
       
       # Convert to zoo object for CausalImpact or other time series analysis
-      data_zoo <- zoo(group_aggregated$Total_PatientCount, order.by = as.Date(group_aggregated$Date))
+      group_aggregated$Date <- as.Date(group_aggregated$Date)
+      data_zoo <- zoo(cbind(group_aggregated$Total_PatientCount, group_aggregated$AvgBedOcc), order.by = group_aggregated$Date)
       
       # Define pre and post period for the analysis
       pre.period <- as.Date(c("2021-09-01", "2023-03-31"))
