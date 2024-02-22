@@ -1,20 +1,8 @@
 #Combined Analysis
 
-# Set Working Directory and run packages
+# Library Management and WD
+pacman::p_load(tidyr, dplyr, segmented, CausalImpact,its.analysis, zoo, lubridate, DBI, readr, openxlsx, htmlTable, ggplot2, gridExtra, CausalArima)
 setwd("C:/Users/toby_lowton/Documents/ERF_Project")
-library(tidyr)
-library(dplyr)
-library(CausalImpact)
-library(zoo)
-library(lubridate)
-library(DBI)
-library(readr)
-library(openxlsx)
-library(htmlTable)
-library(ggplot2)
-library(gridExtra)
-library(pacman)
-library(CausalArima)
 
 # Connect to the database
 con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
@@ -100,22 +88,17 @@ Bed_Occ$Date <- dmy(paste("01-", Bed_Occ$Date, sep=""))
 Bed_Occ$Date <- ceiling_date(Bed_Occ$Date, "month") - days(1)
 data <- left_join(data, Bed_Occ, by = c("Date"))
 
+#set up groups to loop through
 groups_filters <- unique(data$Group)
 settings <- c("AP", "NAP")  # Settings to loop through
 specialties <- c("Medical", "Surgical")
 
-# Define directories for plots and results
 causal_arima_plot_dir <- "outputs/WY/CausalArima/Plots"
-causal_impact_plot_dir <- "outputs/WY/CausalImpact/Plots"
-html_result_dir <- "outputs/WY/CausalArima/HTML_Results"
 causal_arima_residual_dir <- "outputs/WY/CausalArima/Residuals"
-results_list <- list()
-
-# Ensure directories exist
-dir.create(causal_arima_plot_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(causal_arima_residual_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(causal_impact_plot_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(html_result_dir, recursive = TRUE, showWarnings = FALSE)
+causal_arima_html_dir <- "outputs/WY/CausalArima/HTML_Results"
+causal_impact_plot_dir <- "outputs/WY/CausalImpact/Plots"
+its_plot_dir <- "outputs/WY/ITS/Plots"
+its_summary_dir <- "outputs/WY/ITS/Summaries"
 
 # Loop through each setting, specialty, and group
 for (setting in settings) {
@@ -136,7 +119,8 @@ for (setting in settings) {
           AvgBedOcc = mean(BedOcc, na.rm = TRUE),
           .groups = 'drop'
         )
-      
+      data$time <- as.numeric(as.Date(data$Date) - min(as.Date(data$Date))) 
+
       # Convert to zoo object for CausalImpact or other time series analysis
       group_aggregated$Date <- as.Date(group_aggregated$Date)
       data_zoo <- zoo(cbind(group_aggregated$Total_PatientCount, group_aggregated$AvgBedOcc), order.by = group_aggregated$Date)
@@ -145,16 +129,23 @@ for (setting in settings) {
       int.date <- as.Date("2023-03-31")  # Last day of March c-arima
       pre.period <- as.Date(c("2021-09-30", "2023-03-31")) #causalimpact
       post.period <- as.Date(c("2023-04-30", "2023-09-30")) #causalimpact
-      
+      data$intervention <- ifelse(as.Date(data$Date) >= as.Date("2023-03-31"), 1, 0)  # Intervention variable
+
       # run models
       ce <- CausalArima(y = y, dates = subset_data$Date, int.date = int.date, xreg = xreg, nboot = 1000)
       impact <- CausalImpact(data_zoo, pre.period, post.period, model.args = list(niter = 1000, nseasons = 12))
+      seg_model <- lm(PatientCount ~ time + BedOcc + intervention, data = data)
       
       # run plots and graphical outputs, and html table
       forecast_plot <- plot(ce, type = "forecast")
       residual_plots <- plot(ce, type = "residuals")
       summary_model <- summary(ce)
       html_content <- htmlTable(summary_model)
+      summary(seg_model)
+      ggplot(data, aes(x = time, y = PatientCount)) +
+        geom_point() +
+        geom_line(aes(y = predict(seg_model)), color = "red") +
+        labs(title = "Segmented ITS Analysis", x = "Time", y = "Patient Count")
       
       #save plots and graphical outputs
       forecast_plot_path <- file.path(causal_arima_plot_dir, paste0(setting, "_", specialty, "_", group, "_forecast.png"))
@@ -167,6 +158,11 @@ for (setting in settings) {
       print(plot(impact))
       plot_title <- sprintf("%s_%s_%s.png", setting, specialty, gsub(" ", "_", group))
       plot_path <- file.path(causal_impact_plot_dir, plot_title)
+      its_plot_path <- file.path(its_plot_dir, sprintf("%s_%s_%s_ITS.png", setting, specialty, gsub(" ", "_", group)))
+      ggsave(its_plot_path, its_plot, width = 10, height = 6)
+      its_summary <- capture.output(summary(seg_model))
+      its_summary_path <- file.path(its_summary_dir, sprintf("%s_%s_%s_ITS_Summary.txt", setting, specialty, gsub(" ", "_", group)))
+      writeLines(its_summary, its_summary_path)      
       dev.off()
         
       # Extract analytical outputs for causalimpact model
