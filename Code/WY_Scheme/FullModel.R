@@ -1,6 +1,6 @@
-# Set Working Directory and run packages
-# note other visualisation options https://rpubs.com/tgwilson/causalimpactggplot
+#Combined Analysis
 
+# Set Working Directory and run packages
 setwd("C:/Users/toby_lowton/Documents/ERF_Project")
 library(tidyr)
 library(dplyr)
@@ -10,7 +10,11 @@ library(lubridate)
 library(DBI)
 library(readr)
 library(openxlsx)
+library(htmlTable)
+library(ggplot2)
+library(gridExtra)
 library(pacman)
+library(CausalArima)
 
 # Connect to the database
 con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
@@ -56,10 +60,11 @@ AND T_Code IN ('100','101','102','103','104','105','106','107','108','109','110'
 ")
 rm(con)  # Close the database connection
 
+# Process and summarize data
 # Categorize data into 'Surgical' or 'Medical' based on Treatment Function Code
 data <- data %>%
   mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
-         Date = floor_date(as.Date(Date), "month"))
+         Date = ceiling_date(data$Date, "month") - days(1))
 
 # Assuming 'data' is loaded with all required weeks and patient counts.
 data$WeekNum <- as.numeric(gsub(">[^0-9]*([0-9]+)-[0-9]+", "\\1", data$Weeks))
@@ -92,34 +97,39 @@ data <- pivot_longer(data_summarized,
 # Import bed occupancy data, set date to first of month and then join
 Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols())
 Bed_Occ$Date <- dmy(paste("01-", Bed_Occ$Date, sep=""))
+Bed_Occ$Date <- ceiling_date(Bed_Occ$Date, "month") - days(1)
 data <- left_join(data, Bed_Occ, by = c("Date"))
 
 groups_filters <- unique(data$Group)
 settings <- c("AP", "NAP")  # Settings to loop through
 specialties <- c("Medical", "Surgical")
 
-# Initialize an empty list for results
+# Define directories for plots and results
+causal_arima_plot_dir <- "outputs/WY/CausalArima/Plots"
+causal_impact_plot_dir <- "outputs/WY/CausalImpact/Plots"
+html_result_dir <- "outputs/WY/CausalArima/HTML_Results"
+causal_arima_residual_dir <- "outputs/WY/CausalArima/Residuals"
 results_list <- list()
 
-# Ensure the output directory for plots exists
-output_dir <- "outputs/WY/Plots"
-if (!dir.exists(output_dir)) {
-  dir.create(output_dir, recursive = TRUE)
-}
+# Ensure directories exist
+dir.create(causal_arima_plot_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(causal_arima_residual_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(causal_impact_plot_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(html_result_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Initialize an empty list for results
-results_list <- list()
-
-# Loop through each setting, specialty, and now corrected group
+# Loop through each setting, specialty, and group
 for (setting in settings) {
   for (specialty in specialties) {
     for (group in groups_filters) {
-      # Filter the data for the current combination
-      group_filtered <- filter(data, Setting == setting, Specialty == specialty, Group == group)
+      subset_data <- filter(data, Setting == setting, Specialty == specialty, Group == group)
+      if (nrow(subset_data) == 0) next
       
-      if (nrow(group_filtered) == 0) next # Skip if no data
-      
-      group_aggregated <- group_filtered %>%
+      # Prepare the data for both analyses
+      start_year <- format(min(subset_data$Date), "%Y")
+      start_month <- format(min(subset_data$Date), "%m")
+      y <- ts(subset_data$PatientCount, start = c(as.numeric(start_year), as.numeric(start_month)), frequency = 12)
+      xreg <- as.matrix(subset_data$BedOcc)
+      group_aggregated <- subset_data %>%
         group_by(Date) %>%
         summarise(
           Total_PatientCount = sum(PatientCount, na.rm = TRUE),
@@ -131,29 +141,35 @@ for (setting in settings) {
       group_aggregated$Date <- as.Date(group_aggregated$Date)
       data_zoo <- zoo(cbind(group_aggregated$Total_PatientCount, group_aggregated$AvgBedOcc), order.by = group_aggregated$Date)
       
-      # Define pre and post period for the analysis
-      pre.period <- as.Date(c("2021-09-01", "2023-03-01"))
-      post.period <- as.Date(c("2023-04-01", "2023-09-01"))
+      #Set intervention date
+      int.date <- as.Date("2023-03-31")  # Last day of March c-arima
+      pre.period <- as.Date(c("2021-09-30", "2023-03-31")) #causalimpact
+      post.period <- as.Date(c("2023-04-30", "2023-09-30")) #causalimpact
       
-      # Example CausalImpact analysis (replace with actual analysis as needed)
+      # run models
+      ce <- CausalArima(y = y, dates = subset_data$Date, int.date = int.date, xreg = xreg, nboot = 1000)
       impact <- CausalImpact(data_zoo, pre.period, post.period, model.args = list(niter = 1000, nseasons = 12))
       
-      # Check if the impact analysis was successful
-      if (!is.null(impact)) {
-        plot_title <- sprintf("%s_%s_%s.png", setting, specialty, gsub(" ", "_", group))
-        plot_path <- file.path(output_dir, plot_title)
+      # run plots and graphical outputs, and html table
+      forecast_plot <- plot(ce, type = "forecast")
+      residual_plots <- plot(ce, type = "residuals")
+      summary_model <- summary(ce)
+      html_content <- htmlTable(summary_model)
+      
+      #save plots and graphical outputs
+      forecast_plot_path <- file.path(causal_arima_plot_dir, paste0(setting, "_", specialty, "_", group, "_forecast.png"))
+      ggsave(forecast_plot_path, plot = forecast_plot, width = 8, height = 6)
+      residual_plot_path <- file.path(causal_arima_residual_dir, paste0(setting, "_", specialty, "_", group, "_residuals.png"))
+      ggsave(residual_plot_path, grid.arrange(residual_plots$ACF, residual_plots$PACF, residual_plots$QQ_plot, ncol = 3), width = 12, height = 4)
+      html_file_path <- file.path(html_result_dir, paste0(setting, "_", specialty, "_", group, "_impact_boot.html"))
+      writeLines(as.character(html_content), html_file_path)
+      png(filename = plot_path, width = 800, height = 600)
+      print(plot(impact))
+      plot_title <- sprintf("%s_%s_%s.png", setting, specialty, gsub(" ", "_", group))
+      plot_path <- file.path(causal_impact_plot_dir, plot_title)
+      dev.off()
         
-        # Open PNG device
-        png(filename = plot_path, width = 800, height = 600)
-        
-        # Plot the impact analysis results
-        # IMPORTANT: Use print() to explicitly render the plot
-        print(plot(impact))
-        
-        # Turn off the device
-        dev.off()
-      }
-      # Extract and compile relevant metrics from the analysis
+      # Extract analytical outputs for causalimpact model
       if (!is.null(impact) && !is.null(impact$summary)) {
         rel_effect_avg <- impact$summary$RelEffect[1] * 100
         ci_lower_avg <- impact$summary$RelEffect.lower[1] * 100
@@ -165,11 +181,10 @@ for (setting in settings) {
         ci_upper_avg <- NA
         ss_flag <- NA
       }
-      
       avg_total_ap_pre <- mean(group_aggregated$Total_PatientCount[group_aggregated$Date < as.Date("2023-04-01")])
       avg_total_ap_post <- mean(group_aggregated$Total_PatientCount[group_aggregated$Date >= as.Date("2023-04-01")])
       
-      # Append results for the current iteration to the list
+      # Append results for casual impact model 
       results_list[[paste(setting, specialty, gsub("Patients_", "", group), sep = "_")]] <- data.frame(
         Setting = setting,
         Specialty = specialty,
@@ -184,6 +199,7 @@ for (setting in settings) {
     }
   }
 }
-# Combine all results into a single data frame and save
+
+# Save causal impact model results
 final_results_df <- bind_rows(results_list)
-write.xlsx(final_results_df, "Outputs/WY/Results.xlsx", rowNames = FALSE)
+write.xlsx(final_results_df, "Outputs/WY/CausalImpact/Results.xlsx", rowNames = FALSE)
