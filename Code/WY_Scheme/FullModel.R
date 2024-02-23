@@ -1,7 +1,7 @@
 #Combined Analysis
 
 # Library Management and WD
-pacman::p_load(tidyr, dplyr, segmented, CausalImpact,its.analysis, zoo, lubridate, DBI, readr, openxlsx, htmlTable, ggplot2, gridExtra, CausalArima)
+pacman::p_load(tidyr, dplyr, CausalImpact, zoo, lubridate, DBI, readr, openxlsx, htmlTable, ggplot2, gridExtra, CausalArima)
 setwd("C:/Users/toby_lowton/Documents/ERF_Project")
 
 # Connect to the database
@@ -48,19 +48,47 @@ AND T_Code IN ('100','101','102','103','104','105','106','107','108','109','110'
 ")
 rm(con)  # Close the database connection
 
+##Import covariate data
+Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols()) %>%
+  mutate(
+    Date = dmy(paste("01-", Date, sep="")),
+    Date = ceiling_date(Date, "month") - days(1))
+
+##Setting up other covariates
+con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
+data3 <- dbGetQuery(con, "
+Select Top 100 *
+From UDAL_Warehouse.Reporting.ESR_ESR_Sickness_Current
+")
+
+con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
+NewRTT <- dbGetQuery(con, "
+Select Number_Of_New_RTT_Clock_Starts_In_Month AS NEWRTT,
+    Organisation_Code AS Provider_Code,
+    Treatment_Function_Code AS T_Code,
+    Effective_Snapshot_Date AS Date
+From UDAL_Warehouse.UKHF_RTT.New_Data_Items_Provider1_1
+WHERE Effective_Snapshot_Date >= '2021-09-30' AND Effective_Snapshot_Date < '2023-10-01'
+AND Organisation_Code IN ('RCF','RAE','RWY','RR8','RXF')
+AND Treatment_Function_Code IN ('100','101','102','103','104','105','106','107','108','109','110','111','113','115','120','130','140','141','143','144','145','149','150','160','161','170','172','173','174',
+    '180','190','191','192','200','300','301','302','303','304','305','306','307','308','309','310','311','312','313','314','315','316','317','318','319','320','322','323','324','325','326','327','328','329','330','331','333','335','340','341','342','343','344','345','346','347','348','350','352','360','361','370','371','400','401','410','420','422','424','430','431','450','451','460','461','500','501','502','503','504','505','510','520','600','610','620','834')
+")
+
+
+NewRTT <- NewRTT %>%
+  mutate(
+    Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"))
+
+
+
 # Process and summarize data
-# Categorize data into 'Surgical' or 'Medical' based on Treatment Function Code
 data <- data %>%
-  mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
-         Date = ceiling_date(data$Date, "month") - days(1))
-
-# Assuming 'data' is loaded with all required weeks and patient counts.
-data$WeekNum <- as.numeric(gsub(">[^0-9]*([0-9]+)-[0-9]+", "\\1", data$Weeks))
-data_grouped <- data %>%
-  group_by(Setting, Specialty, Date)
-
-# Summarize data to calculate patient counts for each time frame
-data_summarized <- data_grouped %>%
+  mutate(
+    Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
+    Date = ceiling_date(Date, "month") - days(1),
+    WeekNum = as.numeric(gsub(">[^0-9]*([0-9]+)-[0-9]+", "\\1", Weeks))
+  ) %>%
+  group_by(Setting, Specialty, Date) %>%
   summarise(
     Total = sum(PatientCount, na.rm = TRUE),
     Over_18_weeks = sum(ifelse(WeekNum >= 18, PatientCount, 0), na.rm = TRUE),
@@ -75,18 +103,14 @@ data_summarized <- data_grouped %>%
     Seen_41_to_51_weeks = Over_40_weeks - Over_51_weeks,
     Seen_52_to_64_weeks = Over_51_weeks - Over_64_weeks,
     Seen_after_64_weeks = Over_64_weeks
-  )
-
-data <- pivot_longer(data_summarized, 
-                     cols = starts_with("Seen"), 
-                     names_to = "Group", 
-                     values_to = "PatientCount")
-
-# Import bed occupancy data, set date to first of month and then join
-Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols())
-Bed_Occ$Date <- dmy(paste("01-", Bed_Occ$Date, sep=""))
-Bed_Occ$Date <- ceiling_date(Bed_Occ$Date, "month") - days(1)
-data <- left_join(data, Bed_Occ, by = c("Date"))
+  ) %>%
+  pivot_longer(
+    cols = starts_with("Seen"),
+    names_to = "Group",
+    values_to = "PatientCount"
+  )%>%
+  left_join(Bed_Occ, by = "Date") %>% 
+  left_join(NewRTT, by = "Date", "Provider_Code", "Specialty") 
 
 #set up groups to loop through
 groups_filters <- unique(data$Group)
@@ -97,72 +121,58 @@ causal_arima_plot_dir <- "outputs/WY/CausalArima/Plots"
 causal_arima_residual_dir <- "outputs/WY/CausalArima/Residuals"
 causal_arima_html_dir <- "outputs/WY/CausalArima/HTML_Results"
 causal_impact_plot_dir <- "outputs/WY/CausalImpact/Plots"
-its_plot_dir <- "outputs/WY/ITS/Plots"
-its_summary_dir <- "outputs/WY/ITS/Summaries"
+results_list <- list()
 
-# Loop through each setting, specialty, and group
+# Loop through each setting, specialty, and group, and specify time series for all models 
 for (setting in settings) {
   for (specialty in specialties) {
     for (group in groups_filters) {
-      subset_data <- filter(data, Setting == setting, Specialty == specialty, Group == group)
+      subset_data <- data %>%
+        filter(Setting == setting, Specialty == specialty, Group == group) 
       if (nrow(subset_data) == 0) next
       
-      # Prepare the data for both analyses
-      start_year <- format(min(subset_data$Date), "%Y")
-      start_month <- format(min(subset_data$Date), "%m")
-      y <- ts(subset_data$PatientCount, start = c(as.numeric(start_year), as.numeric(start_month)), frequency = 12)
-      xreg <- as.matrix(subset_data$BedOcc)
-      group_aggregated <- subset_data %>%
+      subset_data <- subset_data %>%
+        mutate(Date = as.Date(Date)) %>%
         group_by(Date) %>%
         summarise(
           Total_PatientCount = sum(PatientCount, na.rm = TRUE),
           AvgBedOcc = mean(BedOcc, na.rm = TRUE),
-          .groups = 'drop'
+          .groups = 'drop'  # Ensure the group is dropped after summarise
         )
-      data$time <- as.numeric(as.Date(data$Date) - min(as.Date(data$Date))) 
 
+      y <- ts(subset_data$Total_PatientCount, start = start(subset_data$Date), frequency = 12)
+      xreg <- as.matrix(subset_data$AvgBedOcc)
+      
       # Convert to zoo object for CausalImpact or other time series analysis
-      group_aggregated$Date <- as.Date(group_aggregated$Date)
-      data_zoo <- zoo(cbind(group_aggregated$Total_PatientCount, group_aggregated$AvgBedOcc), order.by = group_aggregated$Date)
+      subset_data$Date <- as.Date(subset_data$Date)
+      data_zoo <- zoo(cbind(subset_data$Total_PatientCount, subset_data$AvgBedOcc), order.by = subset_data$Date)
       
       #Set intervention date
       int.date <- as.Date("2023-03-31")  # Last day of March c-arima
       pre.period <- as.Date(c("2021-09-30", "2023-03-31")) #causalimpact
       post.period <- as.Date(c("2023-04-30", "2023-09-30")) #causalimpact
-      data$intervention <- ifelse(as.Date(data$Date) >= as.Date("2023-03-31"), 1, 0)  # Intervention variable
 
       # run models
       ce <- CausalArima(y = y, dates = subset_data$Date, int.date = int.date, xreg = xreg, nboot = 1000)
       impact <- CausalImpact(data_zoo, pre.period, post.period, model.args = list(niter = 1000, nseasons = 12))
-      seg_model <- lm(PatientCount ~ time + BedOcc + intervention, data = data)
-      
+
       # run plots and graphical outputs, and html table
       forecast_plot <- plot(ce, type = "forecast")
       residual_plots <- plot(ce, type = "residuals")
       summary_model <- summary(ce)
       html_content <- htmlTable(summary_model)
-      summary(seg_model)
-      ggplot(data, aes(x = time, y = PatientCount)) +
-        geom_point() +
-        geom_line(aes(y = predict(seg_model)), color = "red") +
-        labs(title = "Segmented ITS Analysis", x = "Time", y = "Patient Count")
-      
+
       #save plots and graphical outputs
       forecast_plot_path <- file.path(causal_arima_plot_dir, paste0(setting, "_", specialty, "_", group, "_forecast.png"))
-      ggsave(forecast_plot_path, plot = forecast_plot, width = 8, height = 6)
       residual_plot_path <- file.path(causal_arima_residual_dir, paste0(setting, "_", specialty, "_", group, "_residuals.png"))
+      ggsave(forecast_plot_path, plot = forecast_plot, width = 8, height = 6)
       ggsave(residual_plot_path, grid.arrange(residual_plots$ACF, residual_plots$PACF, residual_plots$QQ_plot, ncol = 3), width = 12, height = 4)
-      html_file_path <- file.path(html_result_dir, paste0(setting, "_", specialty, "_", group, "_impact_boot.html"))
+      html_file_path <- file.path(causal_arima_html_dir, paste0(setting, "_", specialty, "_", group, "_impact_boot.html"))
       writeLines(as.character(html_content), html_file_path)
-      png(filename = plot_path, width = 800, height = 600)
-      print(plot(impact))
       plot_title <- sprintf("%s_%s_%s.png", setting, specialty, gsub(" ", "_", group))
       plot_path <- file.path(causal_impact_plot_dir, plot_title)
-      its_plot_path <- file.path(its_plot_dir, sprintf("%s_%s_%s_ITS.png", setting, specialty, gsub(" ", "_", group)))
-      ggsave(its_plot_path, its_plot, width = 10, height = 6)
-      its_summary <- capture.output(summary(seg_model))
-      its_summary_path <- file.path(its_summary_dir, sprintf("%s_%s_%s_ITS_Summary.txt", setting, specialty, gsub(" ", "_", group)))
-      writeLines(its_summary, its_summary_path)      
+      png(filename = plot_path, width = 800, height = 600)
+      print(plot(impact))
       dev.off()
         
       # Extract analytical outputs for causalimpact model
@@ -177,8 +187,8 @@ for (setting in settings) {
         ci_upper_avg <- NA
         ss_flag <- NA
       }
-      avg_total_ap_pre <- mean(group_aggregated$Total_PatientCount[group_aggregated$Date < as.Date("2023-04-01")])
-      avg_total_ap_post <- mean(group_aggregated$Total_PatientCount[group_aggregated$Date >= as.Date("2023-04-01")])
+      avg_total_ap_pre <- mean(subset_data$Total_PatientCount[subset_data$Date < as.Date("2023-04-30")])
+      avg_total_ap_post <- mean(subset_data$Total_PatientCount[subset_data$Date >= as.Date("2023-04-30")])
       
       # Append results for casual impact model 
       results_list[[paste(setting, specialty, gsub("Patients_", "", group), sep = "_")]] <- data.frame(
