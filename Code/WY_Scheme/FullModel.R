@@ -46,7 +46,39 @@ AND Weeks IN ('>0-1', '>1-2', '>2-3', '>3-4', '>4-5', '>5-6', '>6-7', '>7-8', '>
 AND T_Code IN ('100','101','102','103','104','105','106','107','108','109','110','111','113','115','120','130','140','141','143','144','145','149','150','160','161','170','172','173','174',
     '180','190','191','192','200','300','301','302','303','304','305','306','307','308','309','310','311','312','313','314','315','316','317','318','319','320','322','323','324','325','326','327','328','329','330','331','333','335','340','341','342','343','344','345','346','347','348','350','352','360','361','370','371','400','401','410','420','422','424','430','431','450','451','460','461','500','501','502','503','504','505','510','520','600','610','620','834')
 ")
-rm(con)  # Close the database connection
+
+##Setting up other covariates
+Incomplete1 <- dbGetQuery(con, "
+Select Top 100 *
+From UDAL_Warehouse.UKHF_RTT.Incomplete_Pathways_Provider1_1
+")
+
+##Number of incomplete pathways: # Connect to the database
+Incomplete <- dbGetQuery(con, "
+Select Number_Of_Incomplete_Pathways AS IP,
+    Number_Of_Incomplete_Pathways_with_DTA AS IPDTA,
+    Organisation_Code AS Provider_Code,
+    Number_Of_Weeks_Since_Referral AS Weeks,
+    Treatment_Function_Code AS T_Code,
+    Effective_Snapshot_Date AS Date
+From UDAL_Warehouse.UKHF_RTT.Incomplete_Pathways_Provider1_1
+WHERE Effective_Snapshot_Date >= '2021-09-30' AND Effective_Snapshot_Date < '2023-10-01'
+AND Number_Of_Weeks_Since_Referral IN ('>0-1', '>1-2', '>2-3', '>3-4', '>4-5', '>5-6', '>6-7', '>7-8', '>8-9', '>9-10',
+                '>10-11', '>11-12', '>12-13', '>13-14', '>14-15', '>15-16', '>16-17', '>17-18', '>18-19', '>19-20',
+                '>20-21', '>21-22', '>22-23', '>23-24', '>24-25', '>25-26', '>26-27', '>27-28', '>28-29', '>29-30',
+                '>30-31', '>31-32', '>32-33', '>33-34', '>34-35', '>35-36', '>36-37', '>37-38', '>38-39', '>39-40',
+                '>40-41', '>41-42', '>42-43', '>43-44', '>44-45', '>45-46', '>46-47', '>47-48', '>48-49', '>49-50',
+                '>50-51', '>51-52', '>52-53', '>53-54', '>54-55', '>55-56', '>56-57', '>57-58', '>58-59', '>59-60',
+                '>60-61', '>61-62', '>62-63', '>63-64', '>64-65', '>65-66', '>66-67', '>67-68', '>68-69', '>69-70',
+                '>70-71', '>71-72', '>72-73', '>73-74', '>74-75', '>75-76', '>76-77', '>77-78', '>78-79', '>79-80',
+                '>80-81', '>81-82', '>82-83', '>83-84', '>84-85', '>85-86', '>86-87', '>87-88', '>88-89', '>89-90',
+                '>90-91', '>91-92', '>92-93', '>93-94', '>94-95', '>95-96', '>96-97', '>97-98', '>98-99', '>99-100',
+                '>100-101', '>101-102', '>102-103', '>103-104', '>104')
+AND Organisation_Code IN ('RCF','RAE','RWY','RR8','RXF')
+AND Treatment_Function_Code IN ('100','101','102','103','104','105','106','107','108','109','110','111','113','115','120','130','140','141','143','144','145','149','150','160','161','170','172','173','174',
+    '180','190','191','192','200','300','301','302','303','304','305','306','307','308','309','310','311','312','313','314','315','316','317','318','319','320','322','323','324','325','326','327','328','329','330','331','333','335','340','341','342','343','344','345','346','347','348','350','352','360','361','370','371','400','401','410','420','422','424','430','431','450','451','460','461','500','501','502','503','504','505','510','520','600','610','620','834')
+")
+
 
 ##Import covariate data
 Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols()) %>%
@@ -54,14 +86,7 @@ Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols()
     Date = dmy(paste("01-", Date, sep="")),
     Date = ceiling_date(Date, "month") - days(1))
 
-##Setting up other covariates
-con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
-data3 <- dbGetQuery(con, "
-Select Top 100 *
-From UDAL_Warehouse.Reporting.ESR_ESR_Sickness_Current
-")
-
-con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
+#New RTT Clockstarts
 NewRTT <- dbGetQuery(con, "
 Select Number_Of_New_RTT_Clock_Starts_In_Month AS NEWRTT,
     Organisation_Code AS Provider_Code,
@@ -74,10 +99,19 @@ AND Treatment_Function_Code IN ('100','101','102','103','104','105','106','107',
     '180','190','191','192','200','300','301','302','303','304','305','306','307','308','309','310','311','312','313','314','315','316','317','318','319','320','322','323','324','325','326','327','328','329','330','331','333','335','340','341','342','343','344','345','346','347','348','350','352','360','361','370','371','400','401','410','420','422','424','430','431','450','451','460','461','500','501','502','503','504','505','510','520','600','610','620','834')
 ")
 
-
 NewRTT <- NewRTT %>%
-  mutate(
-    Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"))
+  mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"))  %>%
+  select(-T_Code, -Provider_Code)
+
+
+
+
+##Sickness rate WIP
+#data3 <- dbGetQuery(con, "
+#Select Top 100 *
+#From UDAL_Warehouse.Reporting.ESR_ESR_Sickness_Current
+#")
+rm(con)  # Close the database connection
 
 
 
@@ -109,8 +143,49 @@ data <- data %>%
     names_to = "Group",
     values_to = "PatientCount"
   )%>%
-  left_join(Bed_Occ, by = "Date") %>% 
-  left_join(NewRTT, by = "Date", "Provider_Code", "Specialty") 
+  left_join(Bed_Occ, by = "Date")
+
+#process the incomplete covariates before joining to main dataset
+# Process and summarize data
+Incomplete <- Incomplete %>%
+  mutate(
+    Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
+    Date = ceiling_date(Date, "month") - days(1),
+    WeekNum = as.numeric(gsub(">[^0-9]*([0-9]+)-[0-9]+", "\\1", Weeks))
+  ) %>%
+  group_by(Specialty, Date) %>%
+  summarise(
+    Total = sum(IP, na.rm = TRUE),
+    Over_18_weeks = sum(ifelse(WeekNum >= 18, IP, 0), na.rm = TRUE),
+    Over_40_weeks = sum(ifelse(WeekNum >= 40, IP, 0), na.rm = TRUE),
+    Over_51_weeks = sum(ifelse(WeekNum >= 51, IP, 0), na.rm = TRUE),
+    Over_64_weeks = sum(ifelse(WeekNum >= 64, IP, 0), na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    Seen_within_18_weeks = Total - Over_18_weeks,
+    Seen_19_to_40_weeks = Over_18_weeks - Over_40_weeks,
+    Seen_41_to_51_weeks = Over_40_weeks - Over_51_weeks,
+    Seen_52_to_64_weeks = Over_51_weeks - Over_64_weeks,
+    Seen_after_64_weeks = Over_64_weeks
+  ) %>%
+  pivot_longer(
+    cols = starts_with("Seen"),
+    names_to = "Group",
+    values_to = "IP"
+  )
+
+Incomplete <- Incomplete %>%
+  select(-Total, -Over_18_weeks, -Over_40_weeks, -Over_51_weeks, -Over_64_weeks)
+
+##amend data for uniqueness before join (RTT)
+NewRTT <- NewRTT %>%
+  group_by(Date, Specialty) %>%
+  summarise(NEWRTT = mean(NEWRTT), .groups = 'drop') %>%
+  left_join(NewRTT, by = c("Date", "Specialty")) 
+
+data <- data %>%
+  left_join(Incomplete, by = c("Date", "Specialty", "Group")) 
 
 #set up groups to loop through
 groups_filters <- unique(data$Group)
@@ -122,6 +197,7 @@ causal_arima_residual_dir <- "outputs/WY/CausalArima/Residuals"
 causal_arima_html_dir <- "outputs/WY/CausalArima/HTML_Results"
 causal_impact_plot_dir <- "outputs/WY/CausalImpact/Plots"
 results_list <- list()
+
 
 # Loop through each setting, specialty, and group, and specify time series for all models 
 for (setting in settings) {
@@ -136,16 +212,18 @@ for (setting in settings) {
         group_by(Date) %>%
         summarise(
           Total_PatientCount = sum(PatientCount, na.rm = TRUE),
+          Total_NewRTT = sum(NEWRTT, na.rm = TRUE),
           AvgBedOcc = mean(BedOcc, na.rm = TRUE),
+          Mean_IP = mean(IP, na.rm = TRUE),
           .groups = 'drop'  # Ensure the group is dropped after summarise
         )
 
       y <- ts(subset_data$Total_PatientCount, start = start(subset_data$Date), frequency = 12)
-      xreg <- as.matrix(subset_data$AvgBedOcc)
+      xreg <- as.matrix(subset_data[, c("AvgBedOcc", "Total_NewRTT", "Mean_IP")])
       
       # Convert to zoo object for CausalImpact or other time series analysis
       subset_data$Date <- as.Date(subset_data$Date)
-      data_zoo <- zoo(cbind(subset_data$Total_PatientCount, subset_data$AvgBedOcc), order.by = subset_data$Date)
+      data_zoo <- zoo(cbind(subset_data$Total_PatientCount, subset_data$AvgBedOcc, subset_data$Total_NewRTT, subset_data$Mean_IP), order.by = subset_data$Date)
       
       #Set intervention date
       int.date <- as.Date("2023-03-31")  # Last day of March c-arima
