@@ -4,7 +4,7 @@
 pacman::p_load(tidyr, dplyr, CausalImpact, zoo, lubridate, DBI, readr, openxlsx, htmlTable, ggplot2, gridExtra, CausalArima)
 setwd("C:/Users/toby_lowton/Documents/ERF_Project")
 
-# Connect to the database
+## Importing of all data, including covariates
 con <- dbConnect(odbc::odbc(), "UDAL_Warehouse")
 data <- dbGetQuery(con, "
 WITH CombinedPathways AS (
@@ -47,16 +47,9 @@ AND T_Code IN ('100','101','102','103','104','105','106','107','108','109','110'
     '180','190','191','192','200','300','301','302','303','304','305','306','307','308','309','310','311','312','313','314','315','316','317','318','319','320','322','323','324','325','326','327','328','329','330','331','333','335','340','341','342','343','344','345','346','347','348','350','352','360','361','370','371','400','401','410','420','422','424','430','431','450','451','460','461','500','501','502','503','504','505','510','520','600','610','620','834')
 ")
 
-##Setting up other covariates
-Incomplete1 <- dbGetQuery(con, "
-Select Top 100 *
-From UDAL_Warehouse.UKHF_RTT.Incomplete_Pathways_Provider1_1
-")
-
-##Number of incomplete pathways: # Connect to the database
+##Number of incomplete pathways
 Incomplete <- dbGetQuery(con, "
 Select Number_Of_Incomplete_Pathways AS IP,
-    Number_Of_Incomplete_Pathways_with_DTA AS IPDTA,
     Organisation_Code AS Provider_Code,
     Number_Of_Weeks_Since_Referral AS Weeks,
     Treatment_Function_Code AS T_Code,
@@ -79,13 +72,6 @@ AND Treatment_Function_Code IN ('100','101','102','103','104','105','106','107',
     '180','190','191','192','200','300','301','302','303','304','305','306','307','308','309','310','311','312','313','314','315','316','317','318','319','320','322','323','324','325','326','327','328','329','330','331','333','335','340','341','342','343','344','345','346','347','348','350','352','360','361','370','371','400','401','410','420','422','424','430','431','450','451','460','461','500','501','502','503','504','505','510','520','600','610','620','834')
 ")
 
-
-##Import covariate data
-Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols()) %>%
-  mutate(
-    Date = dmy(paste("01-", Date, sep="")),
-    Date = ceiling_date(Date, "month") - days(1))
-
 #New RTT Clockstarts
 NewRTT <- dbGetQuery(con, "
 Select Number_Of_New_RTT_Clock_Starts_In_Month AS NEWRTT,
@@ -99,23 +85,24 @@ AND Treatment_Function_Code IN ('100','101','102','103','104','105','106','107',
     '180','190','191','192','200','300','301','302','303','304','305','306','307','308','309','310','311','312','313','314','315','316','317','318','319','320','322','323','324','325','326','327','328','329','330','331','333','335','340','341','342','343','344','345','346','347','348','350','352','360','361','370','371','400','401','410','420','422','424','430','431','450','451','460','461','500','501','502','503','504','505','510','520','600','610','620','834')
 ")
 
-NewRTT <- NewRTT %>%
-  mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"))  %>%
-  select(-T_Code, -Provider_Code)
-
-
-
-
 ##Sickness rate WIP
 #data3 <- dbGetQuery(con, "
 #Select Top 100 *
 #From UDAL_Warehouse.Reporting.ESR_ESR_Sickness_Current
 #")
+
 rm(con)  # Close the database connection
 
+## Bed Occupancy data
+Bed_Occ <- read_csv("Data_Sources/Bed_Occupancy_Data_WY.csv", col_types = cols()) %>%
+  mutate(
+    Date = dmy(paste("01-", Date, sep="")),
+    Date = ceiling_date(Date, "month") - days(1))
 
 
-# Process and summarize data
+####Processing
+
+# Process main dataset
 data <- data %>%
   mutate(
     Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
@@ -142,13 +129,11 @@ data <- data %>%
     cols = starts_with("Seen"),
     names_to = "Group",
     values_to = "PatientCount"
-  )%>%
-  left_join(Bed_Occ, by = "Date")
+  )
 
-#process the incomplete covariates before joining to main dataset
-# Process and summarize data
+#process incomplete data 
 Incomplete <- Incomplete %>%
-  mutate(
+  mutate(IP = IP,
     Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"),
     Date = ceiling_date(Date, "month") - days(1),
     WeekNum = as.numeric(gsub(">[^0-9]*([0-9]+)-[0-9]+", "\\1", Weeks))
@@ -173,25 +158,30 @@ Incomplete <- Incomplete %>%
     cols = starts_with("Seen"),
     names_to = "Group",
     values_to = "IP"
-  )
-
-Incomplete <- Incomplete %>%
+  ) %>%
   select(-Total, -Over_18_weeks, -Over_40_weeks, -Over_51_weeks, -Over_64_weeks)
 
-##amend data for uniqueness before join (RTT)
-NewRTT <- NewRTT %>%
-  group_by(Date, Specialty) %>%
-  summarise(NEWRTT = mean(NEWRTT), .groups = 'drop') %>%
-  left_join(NewRTT, by = c("Date", "Specialty")) 
 
+##Process RTT data
+NewRTT <- NewRTT %>%
+  mutate(Specialty = ifelse(as.numeric(T_Code) <= 174, "Surgical", "Medical"))  %>%
+  select(-T_Code, -Provider_Code) %>%
+  group_by(Date, Specialty) %>%
+  summarise(NEWRTT = mean(NEWRTT), .groups = 'drop') 
+
+##joining covariates to the dataset
 data <- data %>%
-  left_join(Incomplete, by = c("Date", "Specialty", "Group")) 
+  left_join(Bed_Occ, by = "Date") %>% 
+  left_join(Incomplete, by = c("Date", "Specialty", "Group")) %>%
+  left_join(NewRTT, by = c("Date", "Specialty")) 
 
 #set up groups to loop through
 groups_filters <- unique(data$Group)
 settings <- c("AP", "NAP")  # Settings to loop through
 specialties <- c("Medical", "Surgical")
 
+##Set filepaths for saving
+causal_arima_RC_dir <- "outputs/WY/CausalArima/Robustness_Check"
 causal_arima_plot_dir <- "outputs/WY/CausalArima/Plots"
 causal_arima_residual_dir <- "outputs/WY/CausalArima/Residuals"
 causal_arima_html_dir <- "outputs/WY/CausalArima/HTML_Results"
@@ -239,7 +229,9 @@ for (setting in settings) {
       residual_plots <- plot(ce, type = "residuals")
       summary_model <- summary(ce)
       html_content <- htmlTable(summary_model)
-
+      RC <- summary(ce$model)
+      html_content1 <- htmlTable(RC)
+      
       #save plots and graphical outputs
       forecast_plot_path <- file.path(causal_arima_plot_dir, paste0(setting, "_", specialty, "_", group, "_forecast.png"))
       residual_plot_path <- file.path(causal_arima_residual_dir, paste0(setting, "_", specialty, "_", group, "_residuals.png"))
@@ -247,6 +239,8 @@ for (setting in settings) {
       ggsave(residual_plot_path, grid.arrange(residual_plots$ACF, residual_plots$PACF, residual_plots$QQ_plot, ncol = 3), width = 12, height = 4)
       html_file_path <- file.path(causal_arima_html_dir, paste0(setting, "_", specialty, "_", group, "_impact_boot.html"))
       writeLines(as.character(html_content), html_file_path)
+      RC_plot_path <- file.path(causal_arima_RC_dir, paste0(setting, "_", specialty, "_", group, "_RC.html"))
+      writeLines(as.character(html_content1), RC_plot_path)
       plot_title <- sprintf("%s_%s_%s.png", setting, specialty, gsub(" ", "_", group))
       plot_path <- file.path(causal_impact_plot_dir, plot_title)
       png(filename = plot_path, width = 800, height = 600)
@@ -287,3 +281,18 @@ for (setting in settings) {
 # Save causal impact model results
 final_results_df <- bind_rows(results_list)
 write.xlsx(final_results_df, "Outputs/WY/CausalImpact/Results.xlsx", rowNames = FALSE)
+
+
+
+###Summary Statistics
+
+# Incomplete by group over time
+filtered_df <- Incomplete[Incomplete$Group == 'Seen_after_64_weeks' & Incomplete$Specialty == 'Medical', ]
+
+# Plot
+ggplot(filtered_df, aes(x = Date, y = IP)) +  # Assuming you want to plot PatientCount over Date
+  geom_line() +  # Change to geom_point() if you prefer dots
+  labs(title = "Patient Count Seen After 64 Weeks - Medical",
+       x = "Date",
+       y = "Patient Count") +
+  theme_minimal()
